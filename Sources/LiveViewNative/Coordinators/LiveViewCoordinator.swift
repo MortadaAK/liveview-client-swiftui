@@ -1,6 +1,6 @@
 //
 //  LiveViewCoordinator.swift
-//  
+//
 //
 //  Created by Carson Katri on 1/6/23.
 //
@@ -31,12 +31,12 @@ public class LiveViewCoordinator<R: RootRegistry>: ObservableObject {
     var state: LiveSessionState {
         internalState
     }
-    
+
     @_spi(LiveForm) public let session: LiveSessionCoordinator<R>
     var url: URL
-    
-    private var channel: Channel?
-    
+
+    private var channel: SwiftPhoenixClient.Channel?
+
     @Published var document: LiveViewNativeCore.Document?
     private var elementChangedSubjects = [NodeRef:ObjectWillChangePublisher]()
     func elementChanged(_ ref: NodeRef) -> ObjectWillChangePublisher {
@@ -49,17 +49,17 @@ public class LiveViewCoordinator<R: RootRegistry>: ObservableObject {
     }
     internal var rendered: Root!
     internal let builder = ViewTreeBuilder<R>()
-    
+
     private var currentConnectionToken: ConnectionAttemptToken?
     private var currentConnectionTask: Task<Void, Error>?
-    
+
     private(set) internal var eventSubject = PassthroughSubject<(String, Payload), Never>()
     private(set) internal var eventHandlers = Set<AnyCancellable>()
-    
+
     init(session: LiveSessionCoordinator<R>, url: URL) {
         self.session = session
         self.url = url
-        
+
         self.handleEvent("native_redirect") { [weak self] payload in
             guard let self,
                   let redirect = LiveRedirect(from: payload, relativeTo: self.url)
@@ -69,7 +69,7 @@ public class LiveViewCoordinator<R: RootRegistry>: ObservableObject {
             }
         }
     }
-    
+
     /// Pushes a LiveView event with the given name and payload to the server.
     ///
     /// This is an asynchronous function that completes when the server finishes processing the event and returns a response.
@@ -101,13 +101,13 @@ public class LiveViewCoordinator<R: RootRegistry>: ObservableObject {
             target: target
         )
     }
-    
+
     @discardableResult
     internal func doPushEvent(_ event: String, payload: Payload) async throws -> [String:Any]? {
         guard let channel = channel else {
             return nil
         }
-        
+
         let token = self.currentConnectionToken
 
         let replyPayload: [String:Any] = try await withCheckedThrowingContinuation({ [weak channel] continuation in
@@ -122,12 +122,12 @@ public class LiveViewCoordinator<R: RootRegistry>: ObservableObject {
                     continuation.resume(throwing: LiveConnectionError.eventError(message))
                 }
         })
-        
+
         guard currentConnectionToken === token else {
             // TODO: maybe this should just silently fail?
             throw CancellationError()
         }
-        
+
         if let diffPayload = replyPayload["diff"] as? Payload {
             try self.handleDiff(payload: diffPayload, baseURL: self.url)
             if let reply = diffPayload["r"] as? [String:Any] {
@@ -142,7 +142,7 @@ public class LiveViewCoordinator<R: RootRegistry>: ObservableObject {
         }
         return nil
     }
-    
+
     /// Creates a publisher that can be used to listen for server-sent LiveView events.
     ///
     /// - Parameter event: The event name that is being listened for.
@@ -188,7 +188,7 @@ public class LiveViewCoordinator<R: RootRegistry>: ObservableObject {
             .filter { $0.0 == event }
             .map(\.1)
     }
-    
+
     /// Permanently registers a handler for a server-sent LiveView event.
     ///
     /// - Parameter event: The event name that is being listened for.
@@ -201,14 +201,16 @@ public class LiveViewCoordinator<R: RootRegistry>: ObservableObject {
             .sink(receiveValue: handler)
             .store(in: &eventHandlers)
     }
-    
+
     private func handleDiff(payload: Payload, baseURL: URL) throws {
         handleEvents(payload: payload)
-        let diff = try RootDiff(from: FragmentDecoder(data: payload))
-        self.rendered = try self.rendered.merge(with: diff)
-        self.document?.merge(with: try Document.parse(self.rendered.buildString()))
+        try self.document?.mergeFragmentJson(payload)
+
+        //let diff = try RootDiff(from: FragmentDecoder(data: payload))
+        //self.rendered = try self.rendered.merge(with: diff)
+        //self.document?.merge(with: try Document.parse(self.rendered.buildString()))
     }
-    
+
     private func handleEvents(payload: Payload) {
         guard let events = payload["e"] as? [[Any]] else {
             return
@@ -221,19 +223,19 @@ public class LiveViewCoordinator<R: RootRegistry>: ObservableObject {
             eventSubject.send((name, value))
         }
     }
-    
+
     private nonisolated func parseDOM(html: String, baseURL: URL) throws -> Elements {
         let document = try Parser.htmlParser().parseInput(html, baseURL.absoluteString)
         return document.children()
     }
-    
+
     func connect(domValues: LiveSessionCoordinator<R>.DOMValues, redirect: Bool) async throws {
         await self.disconnect()
-        
+
         self.internalState = .connecting
-        
+
         guard let socket = session.socket else { return }
-        
+
         var connectParams = session.configuration.connectParams?(self.url) ?? [:]
         connectParams["_mounts"] = 0
         connectParams["_format"] = "swiftui"
@@ -293,7 +295,7 @@ public class LiveViewCoordinator<R: RootRegistry>: ObservableObject {
                 self?.internalState = .disconnected
             }
         }
-        
+
         let joinTask = Task {
             for try await joinResult in join(channel: channel) {
                 switch joinResult {
@@ -308,12 +310,12 @@ public class LiveViewCoordinator<R: RootRegistry>: ObservableObject {
                 }
             }
         }
-        
+
         channel.onClose { _ in
             joinTask.cancel()
         }
     }
-    
+
     func disconnect() async {
         if let channel,
            !channel.isClosed
@@ -330,13 +332,13 @@ public class LiveViewCoordinator<R: RootRegistry>: ObservableObject {
             self?.internalState = .disconnected
         }
     }
-    
+
     enum JoinResult {
         case rendered(Payload)
         case redirect(LiveRedirect)
     }
 
-    private func join(channel: Channel) -> AsyncThrowingStream<JoinResult, Error> {
+    private func join(channel: SwiftPhoenixClient.Channel) -> AsyncThrowingStream<JoinResult, Error> {
         return AsyncThrowingStream<JoinResult, Error> { [weak channel] (continuation: AsyncThrowingStream<JoinResult, Error>.Continuation) -> Void in
             channel?.join()
                 .receive("ok") { [weak self, weak channel] message in
@@ -360,7 +362,7 @@ public class LiveViewCoordinator<R: RootRegistry>: ObservableObject {
                         continuation.finish(throwing: LiveConnectionError.viewCoordinatorReleased)
                         return
                     }
-                    
+
                     Task { [weak self] in
                         guard let self else {
                             continuation.finish(throwing: LiveConnectionError.viewCoordinatorReleased)
@@ -389,26 +391,27 @@ public class LiveViewCoordinator<R: RootRegistry>: ObservableObject {
             }
         }
     }
-    
+
     private func handleJoinPayload(renderedPayload: Payload) {
         // todo: what should happen if decoding or parsing fails?
-        self.rendered = try! Root(from: FragmentDecoder(data: renderedPayload))
-        self.document = try! LiveViewNativeCore.Document.parse(rendered.buildString())
-        self.document?.on(.changed) { [unowned self] doc, nodeRef in
-            switch doc[nodeRef].data {
+        //self.rendered = try! Root(from: FragmentDecoder(data: renderedPayload))
+        //self.document = try! LiveViewNativeCore.Document.parse(rendered.buildString())
+        self.document = try! LiveViewNativeCore.Document.parseFragmentJson(payload: renderedPayload)
+        self.document?.on(.changed) { [unowned self] node, data, parent in
+            switch data {
             case .root:
                 // when the root changes, update the `NavStackEntry` itself.
                 self.objectWillChange.send()
             case .leaf:
                 // text nodes don't have their own views, changes to them need to be handled by the parent Text view
-                if let parent = doc.getParent(nodeRef) {
-                    self.elementChanged(nodeRef).send()
+                if let parent {
+                    self.elementChanged(node).send()
                 } else {
-                    self.elementChanged(nodeRef).send()
+                    self.elementChanged(node).send()
                 }
-            case .element:
+            case .nodeElement:
                 // when a single element changes, send an update only to that element.
-                self.elementChanged(nodeRef).send()
+                self.elementChanged(node).send()
             }
         }
         self.handleEvents(payload: renderedPayload)
