@@ -47,7 +47,6 @@ public class LiveViewCoordinator<R: RootRegistry>: ObservableObject {
         }
         return subject
     }
-    internal var rendered: Root!
     internal let builder = ViewTreeBuilder<R>()
 
     private var currentConnectionToken: ConnectionAttemptToken?
@@ -205,10 +204,6 @@ public class LiveViewCoordinator<R: RootRegistry>: ObservableObject {
     private func handleDiff(payload: Payload, baseURL: URL) throws {
         handleEvents(payload: payload)
         try self.document?.mergeFragmentJson(payload)
-
-        //let diff = try RootDiff(from: FragmentDecoder(data: payload))
-        //self.rendered = try self.rendered.merge(with: diff)
-        //self.document?.merge(with: try Document.parse(self.rendered.buildString()))
     }
 
     private func handleEvents(payload: Payload) {
@@ -396,7 +391,7 @@ public class LiveViewCoordinator<R: RootRegistry>: ObservableObject {
         // todo: what should happen if decoding or parsing fails?
         self.document = try! LiveViewNativeCore.Document.parseFragmentJson(payload: renderedPayload)
         self.document?.on(.changed) { [unowned self] nodeRef, nodeData, parent in
-            switch nodeData  {
+            switch nodeData {
             case .root:
                 // when the root changes, update the `NavStackEntry` itself.
                 self.objectWillChange.send()
