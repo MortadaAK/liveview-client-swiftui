@@ -45,7 +45,7 @@ struct NavigationSplitView<Root: RootRegistry>: View {
     }
     
     var hasContent: Bool {
-        $liveElement.hasTemplate("context", default: true)
+        $liveElement.hasTemplate("content", default: true)
     }
     var content: some View {
         $liveElement.children(in: "content", default: true)
